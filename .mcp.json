@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cint": {
+      "command": "python",
+      "args": ["cint_mcp_server.py"]
+    }
+  }
+}
