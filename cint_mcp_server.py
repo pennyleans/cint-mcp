@@ -4,6 +4,10 @@
 Provides AI coding agents (Claude Code, Claude Desktop, Cursor, Windsurf, etc.)
 with direct access to cint 0.2.0 specifications, diagnostic definitions,
 recipes, curriculum, and execution tools.
+
+The execution tools need a local `cint`: CINT_PATH, PATH, or the newest build
+under CINT_BUILD/boot/<leg>. CINT_MCP_TIMEOUT sets their time limit in seconds
+(default 120).
 """
 
 from __future__ import annotations
@@ -20,10 +24,13 @@ from typing import Any, Dict, List, Optional
 
 SERVER_NAME = "cint-mcp"
 SERVER_VERSION = "0.2.0"
-PROTOCOL_VERSION = "2024-11-05"
+PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-CORPUS_PATH = SCRIPT_DIR / "corpus.json"
+# Beside this file in a checkout or bundle; under sys.prefix when installed with pip or uvx
+# (pyproject.toml installs the corpus as a data file).
+CORPUS_PATH = next((p for p in (SCRIPT_DIR / "corpus.json", Path(sys.prefix) / "corpus.json") if p.exists()),
+                   SCRIPT_DIR / "corpus.json")
 
 # Load corpus
 if not CORPUS_PATH.exists():
@@ -47,26 +54,28 @@ DIAG_BY_CODE = {d.get("code", "").upper(): d for d in DIAGNOSTICS_LIST}
 RECIPE_BY_ID = {r.get("id", ""): r for r in RECIPES_LIST}
 
 
+class ToolError(Exception):
+    """A failure returned to the client as an error result (isError true)."""
+
 
 def find_cint_binary() -> Optional[str]:
-    """Locate cint binary via CINT_PATH, PATH, or common default paths."""
+    """Locate cint: CINT_PATH, then PATH, then the newest build under CINT_BUILD/boot/<leg>."""
     env_cint = os.environ.get("CINT_PATH")
     if env_cint and os.path.isfile(env_cint) and os.access(env_cint, os.X_OK):
         return env_cint
 
-    which_cint = shutil.which("cint")
-    if which_cint:
-        return which_cint
+    for name in ("cint", "cint.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
 
-    which_cinte = shutil.which("cint.exe")
-    if which_cinte:
-        return which_cinte
-
-    # Common local Windows path
-    win_path = Path("F:/cint-build/rc1/boot/msvc/cint.exe")
-    if win_path.exists() and os.access(str(win_path), os.X_OK):
-        return str(win_path)
-
+    roots = [Path(os.environ["CINT_BUILD"])] if os.environ.get("CINT_BUILD") else []
+    roots.append(Path(tempfile.gettempdir()) / "cint-build")
+    builds = [root / "boot" / leg / name for root in roots for leg in ("msvc", "clang", "gcc")
+              for name in ("cint", "cint.exe")]
+    builds = [p for p in builds if p.is_file() and os.access(str(p), os.X_OK)]
+    if builds:
+        return str(max(builds, key=lambda p: p.stat().st_mtime))
     return None
 
 
@@ -106,7 +115,7 @@ TOOLS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Keywords, clause names, or error codes (e.g. 'muldiv', 'overflow', 'C1001')"},
-                "scope": {"type": "string", "description": "Optional scope filter: 'spec', 'curriculum', or 'diagnostic'"},
+                "scope": {"type": "string", "description": "Optional scope filter: 'spec' (specifications, glossary, references, errata), 'curriculum', or 'diagnostic' (the diagnostic and fault catalogue)"},
                 "limit": {"type": "integer", "description": "Max results to return (1-20, default: 5)"},
                 "verbose": {"type": "boolean", "description": "If true, return extended chunk content rather than compact summaries"}
             },
@@ -115,7 +124,7 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "cint_get_doc",
-        "description": "Retrieve one self-contained specification or curriculum chunk by ID (e.g. 'SPEC-04P.2:clause-7.2', 'CU-101.2:lesson-101-01').",
+        "description": "Retrieve one self-contained specification or curriculum chunk by the ID cint_search_docs returns (e.g. 'spec-04p:scope', 'cu-201-04:muldiv').",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -132,7 +141,7 @@ TOOLS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "code": {"type": "string", "description": "Diagnostic or fault code (e.g. 'C1001', 'C3005', 'C9102', 'E_OVERFLOW')"},
-                "verbose": {"type": "boolean", "description": "If true, include all sample repairs and specification citations"}
+                "verbose": {"type": "boolean", "description": "Accepted for compatibility; the answer is always complete"}
             },
             "required": ["code"]
         }
@@ -144,7 +153,7 @@ TOOLS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Recipe name or keyword (e.g. 'fixed-point-trig', 'money-ledger')"},
-                "verbose": {"type": "boolean", "description": "If true, include full receipt, fuel counts, and explanation"}
+                "verbose": {"type": "boolean", "description": "If true, include the recipe's explanation"}
             },
             "required": ["name"]
         }
@@ -162,37 +171,33 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "cint_check",
-        "description": "Validate cint (.ci) source code and enrich diagnostics with spec citations and fix examples.",
+        "description": "Compile cint (.ci) source without running it (`cint emit-c`) and return its CINT-DIAG-1 diagnostics, or 'compiles'. Needs a local cint (PATH or CINT_PATH); look codes up with cint_lookup_diagnostic.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "source": {"type": "string", "description": "Complete .ci source code string to check"},
-                "verbose": {"type": "boolean", "description": "If true, include full JSON AST and lowering diagnostics"}
+                "source": {"type": "string", "description": "Complete .ci source code string to check"}
             },
             "required": ["source"]
         }
     },
     {
         "name": "cint_eval",
-        "description": "Compile cint (.ci) source and execute immediately on cpu-sir-interp, returning stdout, fuel consumed, or fault record.",
+        "description": "Compile and run a cint (.ci) program (`cint run`) and return its output, or its CINT-DIAG-1 diagnostic or CINT-FAULT-1 fault record. A program is `void main() { ... }` or top-level statements. Needs a local cint (PATH or CINT_PATH).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "source": {"type": "string", "description": "Complete .ci source code string with void main() entry"},
-                "fuel_limit": {"type": "integer", "description": "Optional execution fuel budget in units (default: 1000000)"},
-                "verbose": {"type": "boolean", "description": "If true, include step counts and receipt digest"}
+                "source": {"type": "string", "description": "Complete .ci source code string"}
             },
             "required": ["source"]
         }
     },
     {
         "name": "cint_test",
-        "description": "Run test and expect_fault blocks in .ci source via the cint test runner.",
+        "description": "Run the `test \"name\" { ... }` blocks of cint (.ci) source (`cint test`) and return one CINT-TEST-1 line per test, with the fault record of each failure. Needs a local cint (PATH or CINT_PATH).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "source": {"type": "string", "description": "Complete .ci source code containing test blocks"},
-                "verbose": {"type": "boolean", "description": "If true, include per-assertion trace"}
+                "source": {"type": "string", "description": "Complete .ci source code containing test blocks"}
             },
             "required": ["source"]
         }
@@ -207,19 +212,28 @@ def handle_search_docs(params: Dict[str, Any]) -> str:
     verbose = bool(params.get("verbose", False))
 
     if not query:
-        return "Please provide a search query."
+        raise ToolError("Please provide a search query.")
 
     terms = query.lower().split()
     scored = []
     for c in CHUNKS:
-        cid = c.get("id", "")
-        if scope == "spec" and not cid.startswith("SPEC-"):
+        cid = c.get("id", "").lower()
+        if scope == "spec" and not cid.startswith(("spec-", "glossary", "references", "errata")):
             continue
-        if scope == "curriculum" and not cid.startswith("CU-"):
+        if scope == "curriculum" and not cid.startswith("cu-"):
+            continue
+        if scope == "diagnostic":
             continue
         s = score_chunk(c, terms)
         if s > 0:
             scored.append((s, c))
+    if scope == "diagnostic":
+        for d in DIAGNOSTICS_LIST:
+            hay = " ".join(str(d.get(k, "")) for k in ("code", "meaning", "ai_cause", "spec")).lower()
+            s = sum(2 for t in terms if t in hay)
+            if s:
+                scored.append((s, {"id": d.get("code", ""), "title": d.get("meaning", ""),
+                                   "clauses": d.get("spec", ""), "content": d.get("ai_cause", "")}))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     if not scored:
@@ -241,7 +255,7 @@ def handle_get_doc(params: Dict[str, Any]) -> str:
     doc_id = params.get("id", "").strip()
     verbose = bool(params.get("verbose", False))
     if not doc_id:
-        return "Please specify chunk id."
+        raise ToolError("Please specify a chunk id.")
 
     c = CHUNK_BY_ID.get(doc_id)
     if not c:
@@ -252,7 +266,7 @@ def handle_get_doc(params: Dict[str, Any]) -> str:
                 break
 
     if not c:
-        return f"Document chunk '{doc_id}' not found. Use cint_search_docs to locate valid chunk IDs."
+        raise ToolError(f"Document chunk '{doc_id}' not found. Use cint_search_docs to locate valid chunk IDs.")
 
     content = c.get("content", "")
     if not verbose:
@@ -265,7 +279,7 @@ def handle_lookup_diagnostic(params: Dict[str, Any]) -> str:
     code = params.get("code", "").strip().upper()
     verbose = bool(params.get("verbose", False))
     if not code:
-        return "Please specify a diagnostic or fault code (e.g. 'C1001', 'E_OVERFLOW')."
+        raise ToolError("Please specify a diagnostic or fault code (e.g. 'C1001', 'E_OVERFLOW').")
 
     diag = DIAG_BY_CODE.get(code)
     if not diag:
@@ -276,7 +290,7 @@ def handle_lookup_diagnostic(params: Dict[str, Any]) -> str:
                 break
 
     if not diag:
-        return f"Diagnostic code '{code}' not recognized in cint 0.2.0 diagnostic catalogue."
+        raise ToolError(f"Diagnostic code '{code}' not recognized in cint 0.2.0 diagnostic catalogue.")
 
     meaning = diag.get("meaning", "")
     spec = diag.get("spec", "")
@@ -300,7 +314,7 @@ def handle_get_recipe(params: Dict[str, Any]) -> str:
     verbose = bool(params.get("verbose", False))
     available = ", ".join(RECIPE_BY_ID.keys())
     if not name:
-        return f"Please specify a recipe name. Available recipes: {available}"
+        raise ToolError(f"Please specify a recipe name. Available recipes: {available}")
 
     matched = RECIPE_BY_ID.get(name)
     if not matched:
@@ -311,7 +325,7 @@ def handle_get_recipe(params: Dict[str, Any]) -> str:
                 break
 
     if not matched:
-        return f"Recipe '{name}' not found. Available recipes: {available}"
+        raise ToolError(f"Recipe '{name}' not found. Available recipes: {available}")
 
     title = matched.get("title", name)
     code = matched.get("code", "")
@@ -323,9 +337,10 @@ def handle_get_recipe(params: Dict[str, Any]) -> str:
     out = [
         f"# Recipe: {name} - {title}",
         f"*Specs:* {specs} | *Fuel:* {fuel} | *Digest:* `{digest}`",
-        f"\n{summary}",
-        f"\n```cint\n{code}\n```"
     ]
+    if verbose and summary:
+        out.append(f"\n{summary}")
+    out.append(f"\n```cint\n{code}\n```")
     return "\n".join(out)
 
 
@@ -338,7 +353,7 @@ def handle_list_curriculum(params: Dict[str, Any]) -> str:
         lessons = [l for l in lessons if course_filter in l.get("edition", "").upper() or course_filter in l.get("id", "").upper()]
 
     if not lessons:
-        return f"No lessons found matching '{course_filter}'."
+        raise ToolError(f"No lessons found matching '{course_filter}'.")
 
     out = [f"### cint University Curriculum ({len(lessons)} lessons):"]
     for l in lessons:
@@ -354,61 +369,56 @@ def handle_list_curriculum(params: Dict[str, Any]) -> str:
 
 
 
-def run_local_cint(cmd_args: List[str], source: str) -> Dict[str, Any]:
+CLI_EXIT = {0: "ok", 1: "runtime fault", 2: "compile error", 3: "test failed", 4: "usage error",
+            5: "environment failure"}
+
+
+def run_local_cint(mode: str, params: Dict[str, Any]) -> str:
+    """Run `cint` on the source in a temporary root, by a relative file name, as the CLI requires."""
+    source = params.get("source", "")
+    if not source:
+        raise ToolError("Please provide the complete .ci source code.")
     cint_bin = find_cint_binary()
     if not cint_bin:
-        return {
-            "error": True,
-            "text": "Local cint toolchain (cint.exe / cint) not found on PATH or CINT_PATH. To run code execution tools locally, install the cint toolchain or set CINT_PATH."
-        }
-
-    with tempfile.NamedTemporaryFile("w", suffix=".ci", delete=False, encoding="utf-8") as tf:
-        tf.write(source)
-        tf_name = tf.name
-
+        raise ToolError("No local cint found on PATH, in CINT_PATH, or under CINT_BUILD/boot/<leg>. "
+                        "Install the cint toolchain or set CINT_PATH to run code.")
     try:
-        res = subprocess.run(
-            [cint_bin] + cmd_args + [tf_name],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=10
-        )
-        output = res.stdout if res.stdout else res.stderr
-        return {"error": res.returncode != 0, "text": output}
-    except subprocess.TimeoutExpired:
-        return {"error": True, "text": "Execution timed out (10s limit exceeded)."}
-    except Exception as e:
-        return {"error": True, "text": f"Execution failed: {e}"}
-    finally:
+        timeout = max(5, int(os.environ.get("CINT_MCP_TIMEOUT", "120")))
+    except ValueError:
+        timeout = 120
+    with tempfile.TemporaryDirectory(prefix="cint-mcp-") as tmp:
+        with open(os.path.join(tmp, "snippet.ci"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(source)
+        if mode == "check":
+            args = ["--json", "emit-c", "--root", ".", "--out", os.path.join(tmp, "_emit"), "snippet.ci"]
+        else:
+            args = ["--json", mode, "snippet.ci"]
         try:
-            os.remove(tf_name)
-        except OSError:
-            pass
+            res = subprocess.run([cint_bin] + args, cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise ToolError(f"Execution timed out ({timeout} s; set CINT_MCP_TIMEOUT to allow longer).")
+        except OSError as e:
+            raise ToolError(f"Could not start {cint_bin}: {e}")
+    code = res.returncode
+    out = (res.stdout.decode("utf-8", "replace") + res.stderr.decode("utf-8", "replace")).strip()
+    if code in (4, 5) or code not in CLI_EXIT:
+        raise ToolError(f"cint failed: exit {code}, {CLI_EXIT.get(code, 'unexpected')}.\n{out}")
+    if mode == "check" and code == 0:
+        out = "compiles: no diagnostics (nothing was run)."
+    return f"outcome: {CLI_EXIT[code]} (exit {code})" + (f"\n\n{out}" if out else "")
 
 
 def handle_check(params: Dict[str, Any]) -> str:
-    source = params.get("source", "")
-    if not source:
-        return "Please provide .ci source code to check."
-    res = run_local_cint(["emit-c", "--json"], source)
-    return res["text"]
+    return run_local_cint("check", params)
 
 
 def handle_eval(params: Dict[str, Any]) -> str:
-    source = params.get("source", "")
-    if not source:
-        return "Please provide .ci source code to evaluate."
-    res = run_local_cint(["eval"], source)
-    return res["text"]
+    return run_local_cint("run", params)
 
 
 def handle_test(params: Dict[str, Any]) -> str:
-    source = params.get("source", "")
-    if not source:
-        return "Please provide .ci source code with test blocks."
-    res = run_local_cint(["test", "--json"], source)
-    return res["text"]
+    return run_local_cint("test", params)
 
 
 def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -433,102 +443,78 @@ def execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             return {"content": [{"type": "text", "text": f"Unknown tool: {name}"}], "isError": True}
 
         return {"content": [{"type": "text", "text": text}], "isError": False}
+    except ToolError as e:
+        return {"content": [{"type": "text", "text": str(e)}], "isError": True}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Internal tool execution error: {e}"}], "isError": True}
 
 
+def handle_request(req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if "id" not in req:
+        return None  # a notification gets no response
+    req_id = req.get("id")
+    method = req.get("method")
+    params = req.get("params") or {}
+
+    def ok(result: Dict[str, Any]) -> Dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+    def fail(code: int, message: str) -> Dict[str, Any]:
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+    if method == "initialize":
+        asked = params.get("protocolVersion")
+        return ok({
+            "protocolVersion": asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
+            "capabilities": {
+                "tools": {"listChanged": False},
+                "resources": {"listChanged": False},
+                "prompts": {"listChanged": False}
+            },
+            "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+            "instructions": MANIFEST.get("instructions", "cint 0.2.0 deterministic integer language MCP server.")
+        })
+    if method == "ping":
+        return ok({})
+    if method == "tools/list":
+        return ok({"tools": TOOLS})
+    if method == "tools/call":
+        return ok(execute_tool(params.get("name", ""), params.get("arguments") or {}))
+    if method == "resources/list":
+        return ok({"resources": RESOURCES_META})
+    if method == "resources/templates/list":
+        return ok({"resourceTemplates": []})
+    if method == "resources/read":
+        uri = params.get("uri", "")
+        text = RESOURCES.get(uri)
+        if text is None:
+            return fail(-32602, f"Resource URI not found: {uri}")
+        mime_type = "application/json" if uri == "cint://manifest" else "text/markdown"
+        return ok({"contents": [{"uri": uri, "mimeType": mime_type, "text": text}]})
+    if method == "prompts/list":
+        return ok({"prompts": []})
+    return fail(-32601, f"Method not found: {method}")
+
+
 def main():
+    stdin = sys.stdin.buffer
+    stdout = sys.stdout.buffer
     while True:
-        line = sys.stdin.readline()
+        line = stdin.readline()
         if not line:
             break
         line = line.strip()
         if not line:
             continue
-
         try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        req_id = req.get("id")
-        method = req.get("method")
-        params = req.get("params", {})
-
-        if method == "initialize":
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "capabilities": {
-                        "tools": {"listChanged": False},
-                        "resources": {"listChanged": False},
-                        "prompts": {"listChanged": False}
-                    },
-                    "serverInfo": {
-                        "name": SERVER_NAME,
-                        "version": SERVER_VERSION
-                    },
-                    "instructions": MANIFEST.get("instructions", "cint 0.2.0 deterministic integer language MCP server.")
-                }
-            }
-        elif method == "notifications/initialized" or method == "ping":
-            resp = {"jsonrpc": "2.0", "id": req_id, "result": {}}
-        elif method == "tools/list":
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"tools": TOOLS}
-            }
-        elif method == "tools/call":
-            tool_name = params.get("name", "")
-            tool_args = params.get("arguments", {})
-            tool_res = execute_tool(tool_name, tool_args)
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": tool_res
-            }
-        elif method == "resources/list":
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"resources": RESOURCES_META}
-            }
-        elif method == "resources/read":
-            uri = params.get("uri", "")
-            text = RESOURCES.get(uri)
-            if text is None:
-                resp = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32602, "message": f"Resource URI not found: {uri}"}
-                }
-            else:
-                mime_type = "application/json" if uri == "cint://manifest" else "text/markdown"
-                resp = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "contents": [{"uri": uri, "mimeType": mime_type, "text": text}]
-                    }
-                }
-        elif method == "prompts/list":
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"prompts": []}
-            }
+            req = json.loads(line.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            resp = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}
         else:
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32601, "message": f"Method not found: {method}"}
-            }
-
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
+            resp = handle_request(req) if isinstance(req, dict) else None
+        if resp is not None:
+            stdout.write(json.dumps(resp).encode("utf-8") + b"\n")
+            stdout.flush()
 
 
 if __name__ == "__main__":

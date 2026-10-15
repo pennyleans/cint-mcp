@@ -92,9 +92,11 @@ Add to `.cursor/mcp.json` or windsurf config:
 | `cint_lookup_diagnostic` | `code`, `verbose` | Explain compile error codes (`C1001`–`C9102`) or runtime faults (`E_OVERFLOW`, `E_DIVZERO`) with repairs |
 | `cint_get_recipe` | `name`, `verbose` | Fetch verified 0.2.0 `.ci` code recipes (`fixed-point-trig`, `money-ledger`, `fnv1a-digest`, etc.) |
 | `cint_list_curriculum` | `course`, `verbose` | List curriculum lessons across `CU-000` to `CU-401` |
-| `cint_check` | `source`, `verbose` | Validate `.ci` source syntax and types via local compiler |
-| `cint_eval` | `source`, `fuel_limit`, `verbose` | Compile and execute snippet on `cpu-sir-interp` |
-| `cint_test` | `source`, `verbose` | Run test and fault assertions via `cint test` |
+| `cint_check` | `source` | Compile `.ci` source without running it (`cint emit-c`) and return its diagnostics |
+| `cint_eval` | `source` | Compile and run a program (`cint run`) and return its output or fault record |
+| `cint_test` | `source` | Run the program's `test` blocks (`cint test`) |
+
+The three execution tools need a local `cint`: on `PATH`, named by `CINT_PATH`, or the newest build under `CINT_BUILD/boot/<leg>`. `CINT_MCP_TIMEOUT` sets their time limit in seconds (default 120).
 
 ---
 
