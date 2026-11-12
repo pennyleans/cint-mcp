@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cint-mcp"
-version = "0.2.0"
-description = "Model Context Protocol (MCP) server for cint 0.2.0 specifications, diagnostics, recipes, and execution"
+version = "0.2.1"
+description = "Model Context Protocol (MCP) server for cint: the primer of what cintc compiles (checked on cint 0.2.18), the 0.2.0 specifications, diagnostics and recipes, and execution"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "Apache-2.0 WITH LLVM-exception" }
@@ -19,4 +19,4 @@ cint-mcp = "cint_mcp_server:main"
 
 [tool.setuptools]
 py-modules = ["cint_mcp_server"]
-data-files = { "" = ["corpus.json", ".mcp.json"] }
+data-files = { "" = ["corpus.json", "PRIMER.md", ".mcp.json"] }

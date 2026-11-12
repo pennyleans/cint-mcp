@@ -13,8 +13,8 @@ manifest = {
     "manifest_version": "0.3",
     "name": "cint",
     "display_name": "cint 0.2.0",
-    "version": "0.2.0",
-    "description": "Deterministic integer programming language specifications, diagnostics, recipes, and execution tools for cint 0.2.0.",
+    "version": "0.2.1",
+    "description": "The cint primer (what cintc compiles, checked on cint 0.2.18), the cint 0.2.0 specifications, diagnostics and recipes, and execution tools.",
     "author": {"name": "pennyleans"},
     "icon": "icon.png",
     "server": {
@@ -32,6 +32,7 @@ with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("manifest.json", json.dumps(manifest, indent=2))
     z.write(SCRIPT_DIR / "cint_mcp_server.py", "cint_mcp_server.py")
     z.write(SCRIPT_DIR / "corpus.json", "corpus.json")
+    z.write(SCRIPT_DIR / "PRIMER.md", "PRIMER.md")
     z.write(SCRIPT_DIR / "icon.png", "icon.png")
 
 print(f"Packaged {out_path} ({os.path.getsize(out_path)/1024:.1f} KB)")

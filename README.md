@@ -7,6 +7,7 @@
 Official public **Model Context Protocol (MCP)** server for **cint 0.2.0** (checked against compiler identity `d6ebe30d604346afe4a7912c5d6f3ce2b9d401641d361772892b44b9292609ff`).
 
 Gives coding agents (Claude Code, Claude Desktop, Cursor, Windsurf, Copilot, etc.) instant in-memory access to:
+* **The primer ([PRIMER.md](PRIMER.md))**: one page of what `cintc` compiles, with the forms it refuses (C9102) and the form to write instead, what each diagnostic means, and the reserved names. Every example is checked on cint 0.2.18
 * **Public Specifications (`SPEC-00P` through `SPEC-09P`)**
 * **Diagnostic & Fault Catalogue (`C1001` through `C9102`, `E_OVERFLOW`, `E_ASSERT`, etc.)**
 * **Verified `.ci` Recipes with cryptographic receipts**
@@ -14,6 +15,8 @@ Gives coding agents (Claude Code, Claude Desktop, Cursor, Windsurf, Copilot, etc
 * **Native Toolchain Execution (`cint_check`, `cint_eval`, `cint_test`)** when a local `cint` binary is present
 
 Zero external package dependencies — runs on standard Python 3.8+ on Linux, macOS, and Windows.
+
+The specifications, catalogue, recipes and curriculum are the texts of cint 0.2.0. The primer is checked on cint 0.2.18 (compiler identity `baa6d80a6614ba2872e763cb45e5f80a45995578cd3288fc369b0525bb2f661f`): where the two differ, the primer holds.
 
 ---
 
@@ -87,16 +90,17 @@ Add to `.cursor/mcp.json` or windsurf config:
 
 | Tool | Parameters | Description |
 | :--- | :--- | :--- |
+| `cint_primer` | `section` | Read before writing `.ci`: the primer, whole or one section by number, heading or code (`C9102`, `E_OVERFLOW`) |
 | `cint_search_docs` | `query`, `scope`, `limit`, `verbose` | Search across specifications, glossary, errata, and university lessons |
 | `cint_get_doc` | `id`, `verbose` | Retrieve a self-contained specification or lesson chunk |
-| `cint_lookup_diagnostic` | `code`, `verbose` | Explain compile error codes (`C1001`–`C9102`) or runtime faults (`E_OVERFLOW`, `E_DIVZERO`) with repairs |
+| `cint_lookup_diagnostic` | `code`, `verbose` | Explain a compile error code (`C1001` to `C9102`) or a runtime fault (`E_OVERFLOW`, `E_DIV_ZERO`): the primer's section first, then the 0.2.0 catalogue entry with repairs |
 | `cint_get_recipe` | `name`, `verbose` | Fetch verified 0.2.0 `.ci` code recipes (`fixed-point-trig`, `money-ledger`, `fnv1a-digest`, etc.) |
 | `cint_list_curriculum` | `course`, `verbose` | List curriculum lessons across `CU-000` to `CU-401` |
 | `cint_check` | `source` | Compile `.ci` source without running it (`cint emit-c`) and return its diagnostics |
-| `cint_eval` | `source` | Compile and run a program (`cint run`) and return its output or fault record |
+| `cint_eval` | `source`, `args` | Compile and run a program (`cint run`) and return its output or fault record; `args` are the words after `--` |
 | `cint_test` | `source` | Run the program's `test` blocks (`cint test`) |
 
-The three execution tools need a local `cint`: on `PATH`, named by `CINT_PATH`, or the newest build under `CINT_BUILD/boot/<leg>`. `CINT_MCP_TIMEOUT` sets their time limit in seconds (default 120).
+The three execution tools need a local `cint`: on `PATH`, named by `CINT_PATH`, or the newest build under `CINT_BUILD/boot/<leg>`. `CINT_MCP_TIMEOUT` sets their time limit in seconds (default 120). Each result names the version of the `cint` that answered, and a result with a diagnostic or a fault ends with the primer's text for its code.
 
 ---
 
@@ -104,11 +108,25 @@ The three execution tools need a local `cint`: on `PATH`, named by `CINT_PATH`, 
 
 | Resource URI | Description |
 | :--- | :--- |
+| `cint://primer` | The primer: what `cintc` compiles, checked on cint 0.2.18 |
 | `cint://manifest` | Public edition SHA-256 hashes and compiler source identity |
 | `cint://from-c` | Quickstart guide for C programmers |
 | `cint://from-python` | Quickstart guide for Python and NumPy developers |
 | `cint://cheat-sheet` | Condensed cint 0.2.0 syntax, types, and rules |
 | `cint://refusals` | Refused constructs catalogue under SPEC-09P.1 |
+
+---
+
+## Checking the primer
+
+Every fenced example of `PRIMER.md` is compiled or run by `check_primer.py`: a `ci run` block with its `output`, `ci error CODE`, `ci fault E_NAME`, `ci test`, and each word of a `names` block.
+
+```bash
+python check_primer.py --cint /path/to/cint
+python -m unittest test_mcp            # with CINT_PATH set, also runs the line above
+```
+
+On cint 0.2.18: `pass cint primer: 74 blocks (15 run, 49 error, 9 fault, 1 test) and 114 reserved names, 0 failed`.
 
 ---
 
