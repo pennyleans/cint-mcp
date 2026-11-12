@@ -4,7 +4,8 @@
     python -m unittest test_mcp -v
 
 The execution tests run a local cint only when CINT_PATH names one; otherwise they
-check that the tools report that no cint was found.
+check that the tools report that no cint was found. With CINT_PATH set, check_primer.py
+also runs every example of PRIMER.md on that cint.
 """
 
 import json
@@ -15,7 +16,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SERVER = Path(__file__).resolve().parent / "cint_mcp_server.py"
+HERE = Path(__file__).resolve().parent
+SERVER = HERE / "cint_mcp_server.py"
 
 
 class Server:
@@ -54,6 +56,9 @@ def start(cint_path):
     else:
         env["PATH"] = os.pathsep.join(p for p in env.get("PATH", "").split(os.pathsep)
                                       if not (Path(p) / "cint").exists() and not (Path(p) / "cint.exe").exists())
+        # The server also looks under cint-build in the system temporary directory: give it an empty one.
+        empty = tempfile.mkdtemp(prefix="cint-mcp-test-")
+        env.update({"TMPDIR": empty, "TEMP": empty, "TMP": empty})
     return Server(env)
 
 
@@ -79,7 +84,7 @@ class ProtocolAndCorpusTests(unittest.TestCase):
 
     def test_tools_list(self):
         tools = {t["name"] for t in self.server.request("tools/list")["result"]["tools"]}
-        self.assertEqual(tools, {"cint_search_docs", "cint_get_doc", "cint_lookup_diagnostic", "cint_get_recipe",
+        self.assertEqual(tools, {"cint_primer", "cint_search_docs", "cint_get_doc", "cint_lookup_diagnostic", "cint_get_recipe",
                                  "cint_list_curriculum", "cint_check", "cint_eval", "cint_test"})
 
     def test_search_scopes(self):
@@ -112,9 +117,45 @@ class ProtocolAndCorpusTests(unittest.TestCase):
         text, err = self.server.call("cint_get_recipe", name="no-such-recipe")
         self.assertTrue(err)
 
+    def test_primer(self):
+        text, err = self.server.call("cint_primer")
+        self.assertFalse(err)
+        self.assertEqual(text, (HERE / "PRIMER.md").read_text(encoding="utf-8").strip())
+        text, err = self.server.call("cint_primer", section="1")
+        self.assertTrue(text.startswith("## 1. The short list"), text[:80])
+        self.assertNotIn("## 2.", text)
+        text, err = self.server.call("cint_primer", section="arrays")
+        self.assertTrue(text.startswith("### 3.4 Arrays"), text[:80])
+        text, err = self.server.call("cint_primer", section="c9102")
+        self.assertTrue(text.startswith("## 4. C9102:"), text[:80])
+        self.assertIn("| C9102 in 0.2.18 | write |", text)
+        text, err = self.server.call("cint_primer", section="E_OVERFLOW")
+        self.assertTrue(text.startswith("### E_OVERFLOW:"), text[:80])
+        text, err = self.server.call("cint_primer", section="no such section")
+        self.assertTrue(err)
+        self.assertIn("- 1. The short list", text)
+
+    def test_instructions_lead_with_the_primer(self):
+        text = self.init["instructions"]
+        self.assertIn("call cint_primer once", text)
+        self.assertIn("1. No implicit conversion", text)
+        self.assertNotIn("cheat-sheet", text)
+
+    def test_diagnostic_primer_first(self):
+        text, err = self.server.call("cint_lookup_diagnostic", code="C5012")
+        self.assertFalse(err)
+        self.assertTrue(text.startswith("**C5012** in the primer"), text[:80])
+        self.assertLess(text.index("### C5012:"), text.index("in the cint 0.2.0 catalogue"))
+        text, err = self.server.call("cint_lookup_diagnostic", code="C1001")
+        self.assertFalse(err)
+        self.assertIn("**C1001** in the cint 0.2.0 catalogue", text)
+
     def test_resources(self):
         uris = {r["uri"] for r in self.server.request("resources/list")["result"]["resources"]}
         self.assertIn("cint://cheat-sheet", uris)
+        self.assertIn("cint://primer", uris)
+        text = self.server.request("resources/read", {"uri": "cint://primer"})["result"]["contents"][0]["text"]
+        self.assertTrue(text.startswith("# cint primer"), text[:80])
         text = self.server.request("resources/read", {"uri": "cint://cheat-sheet"})["result"]["contents"][0]["text"]
         self.assertIn("cint", text.lower())
         self.assertEqual(self.server.request("resources/read", {"uri": "cint://none"})["error"]["code"], -32602)
@@ -150,6 +191,13 @@ class ExecutionTests(unittest.TestCase):
         self.assertFalse(err)
         self.assertIn("compile error (exit 2)", text)
         self.assertIn('"code":"C1050"', text)
+        self.assertIn("engine: cint ", text)
+        self.assertIn("From the primer", text)
+        self.assertIn("C1050: a syntax error", text)
+        text, err = self.server.call("cint_check", source="void main() {\n    I64[3] xs = [1, 2, 3];\n"
+                                     "    for x in xs { \"{x}\\n\"; }\n}\n")
+        self.assertIn('"code":"C9102"', text)
+        self.assertIn("| C9102 in 0.2.18 | write |", text)
 
     def test_eval(self):
         text, err = self.server.call("cint_eval", source='void main() {\n    I64 x = 6 * 7;\n    "answer={x}\\n";\n}\n')
@@ -158,6 +206,22 @@ class ExecutionTests(unittest.TestCase):
         text, err = self.server.call("cint_eval", source='void main() {\n    I8 x = 100;\n    I8 y = x + x;\n    "{y}\\n";\n}\n')
         self.assertIn("runtime fault (exit 1)", text)
         self.assertIn('"code":"E_OVERFLOW"', text)
+        self.assertIn("E_OVERFLOW: a result outside its type", text)
+
+    def test_eval_arguments_and_error_result(self):
+        text, err = self.server.call("cint_eval", args=["alpha", "beta"],
+                                     source='void main(in U8[_] args) {\n    "{len(args)}\\n";\n}\n')
+        self.assertFalse(err, text)
+        self.assertIn("ok (exit 0)", text)
+        self.assertIn("\n11", text)
+        text, err = self.server.call("cint_eval", source="error E { bad }\nE!void main() {\n    return .bad;\n}\n")
+        self.assertFalse(err, text)
+        self.assertIn("main returned an error (exit 6)", text)
+
+    def test_every_example_of_the_primer(self):
+        done = subprocess.run([sys.executable, str(HERE / "check_primer.py"), "--cint", os.environ["CINT_PATH"]],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(done.returncode, 0, done.stdout.decode("utf-8", "replace")[-2000:])
 
     def test_test(self):
         text, err = self.server.call("cint_test", source='I64 add(I64 a, I64 b) { return a + b; }\n'
